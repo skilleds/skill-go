@@ -1,0 +1,13 @@
+slug = "go"
+name = "schematize-go"
+tag = "Backend · Go"
+status = "beta"
+order = 1
+current_version = "1.14.1"
+requires = ["engineering"]   # o piso vem da base; esta skill so especializa (SKILL.md, "Precedencia e heranca")
+href = "/go"
+
+[descriptions]
+pt = "Padrões normativos de engenharia para backends em Go."
+en = "Normative engineering standards for Go backends."
+es = "Estándares normativos de ingeniería para backends en Go."

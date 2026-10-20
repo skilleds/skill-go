@@ -1,0 +1,62 @@
+# schematize-go — workflow de CI de referência (§13, §21, a `schematize-qa`, §35).
+# Copie para .github/workflows/ci.yml e ajuste <projeto>/comandos da sua stack.
+name: ci
+on:
+  pull_request:
+  push: { branches: [main] }
+
+jobs:
+  standards-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with: { fetch-depth: 0 }
+      - name: Gate de padrões (DoD/§37) no diff
+        run: bash .claude/skills/schematize-go/scripts/check-diff.sh "origin/${{ github.base_ref || 'main' }}"
+      - name: Índice de microfunções atualizado (§39)
+        env:
+          # Sem estes dois o gate NAO roda — e nao rodar REPROVA. Gate desarmado em silencio
+          # ("|| true" + diff comentado) foi o achado A5 da vistoria de 2026-08-21.
+          INDEX_SRC: ${{ vars.INDEX_SRC || './internal' }}
+          INDEX_FILE: ${{ vars.INDEX_FILE }}
+        run: bash .claude/skills/schematize-go/scripts/check-index.sh
+      - name: Scan de segredo no archive (§16.1/§32)
+        run: bash .claude/skills/schematize-go/scripts/archive-secret-scan.sh .
+
+  go-lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with: { go-version-file: go.mod }   # a toolchain vem do go.mod (build reprodutível)
+      - name: go vet
+        run: go vet ./...
+      - name: golangci-lint v2 (inclui staticcheck, errcheck, gosec, depguard — config assets/lint/.golangci.yml)
+        # O passo FALHA se o linter sair != 0 (sem `|| true`): schema v1 de config vira erro, nao aviso.
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with: { version: v2.14.0 }
+      - name: govulncheck (vulnerabilidade com alcançabilidade — trava o merge)
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+      - name: Testes com race detector (concorrência real — references/concorrencia.md)
+        run: go test -race -count=1 -shuffle=on -coverprofile=cover.out ./...
+
+  test-kit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: Smoke + security + authz + hardening (PR — a `schematize-qa` (gates de CI, `references/execucao.md` secao 6))
+        run: |
+          # <projeto> test smoke && <projeto> test security && <projeto> test authz && <projeto> test hardening
+          echo "ligue ao CLI <projeto>_ops aqui"
+      - name: Smoke self-check (anti verde-mentiroso — a `schematize-qa` (smoke e matriz simulated, `references/categorias.md` secoes 5 e 10))
+        run: bash .claude/skills/schematize-go/scripts/smoke-selfcheck.sh --self-check
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: Trivy fs
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with: { scan-type: fs, severity: HIGH,CRITICAL, exit-code: '1' }
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9

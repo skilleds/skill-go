@@ -3,7 +3,7 @@ name = "schematize-go"
 tag = "Backend · Go"
 status = "beta"
 order = 1
-current_version = "1.14.0"
+current_version = "1.14.1"
 requires = ["engineering"]   # o piso vem da base; esta skill so especializa (SKILL.md, "Precedencia e heranca")
 href = "/go"
 

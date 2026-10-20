@@ -1,0 +1,19 @@
+{
+  "_comment": "Exemplo. Copie para .claude/settings.json do projeto e ajuste caminhos. Os scripts ficam em .claude/hooks/. Defina PROJECT_ARCHIVE e (opcional) CTX_THRESHOLD no ambiente.",
+  "statusLine": {
+    "type": "command",
+    "command": "node .claude/hooks/context-monitor.mjs"
+  },
+  "hooks": {
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/precompact-backup.mjs"
+          }
+        ]
+      }
+    ]
+  }
+}

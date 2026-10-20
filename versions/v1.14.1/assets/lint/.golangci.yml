@@ -1,0 +1,55 @@
+# schematize-go — guard de imports por camada (§4) para Go, via depguard.
+# Copie para .golangci.yml na raiz do serviço Go.
+#
+# SCHEMA v2 (obrigatorio). O schema v1 foi descontinuado: um arquivo v1 nao vira "lint com aviso",
+# vira ERRO DE CONFIG — o golangci-lint recusa carregar. Num CI que nao trata o exit code, isso e
+# um gate que deixou de rodar sem ninguem ver (achado da Classe E da vistoria de 2026-08-21: o
+# verde mentiroso na propria ferramenta que existe para impedir verde mentiroso).
+#
+# O passo de CI TEM de falhar quando o golangci-lint sai != 0. Nada de `|| true`.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - depguard        # fronteira de camadas (§4)
+    - gocyclo         # complexidade ciclomatica > 15 (padroes-codigo.md §3.1)
+    - nestif          # aninhamento > 4 niveis (padroes-codigo.md §3.1)
+    - gosec           # padroes inseguros
+    - errcheck        # erro nunca engolido (§37)
+    - ineffassign
+    - unparam
+  settings:
+    gocyclo:
+      min-complexity: 15          # padroes-codigo.md §3.1: ciclomatica > 15 BLOQUEIA
+    nestif:
+      min-complexity: 5           # aninhamento > 4 niveis BLOQUEIA (o 5o nivel ja e o estouro)
+    depguard:
+      rules:
+        domain-puro:
+          files: ["**/domain/**"]
+          deny:
+            - pkg: "net/http"
+              desc: "domain nao conhece IO/framework (§4)"
+            - pkg: "database/sql"
+              desc: "domain nao conhece persistencia (§4)"
+            - pkg: "github.com/jmoiron/sqlx"
+              desc: "domain nao conhece ORM (§4)"
+            - pkg: "**/infrastructure/**"
+              desc: "domain nao importa infrastructure (§4)"
+            - pkg: "**/application/**"
+              desc: "domain nao importa application (§4)"
+            - pkg: "**/interface/**"
+              desc: "domain nao importa interface (§4)"
+        application-sem-interface:
+          files: ["**/application/**"]
+          deny:
+            - pkg: "**/interface/**"
+              desc: "application nao importa interface (§4)"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

@@ -1,0 +1,15 @@
+# schematize-go — pre-commit (pip install pre-commit && pre-commit install).
+# Copie para .pre-commit-config.yaml na raiz do repo.
+repos:
+  - repo: local
+    hooks:
+      - id: archive-secret-scan
+        name: scan de segredo/PII no archive (§16.1/§32)
+        entry: bash .claude/skills/schematize-go/scripts/archive-secret-scan.sh .
+        language: system
+        pass_filenames: false
+      - id: standards-gate
+        name: gate de padrões no diff (§35/§37)
+        entry: bash .claude/skills/schematize-go/scripts/check-diff.sh HEAD
+        language: system
+        pass_filenames: false
