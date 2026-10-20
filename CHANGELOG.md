@@ -2,6 +2,10 @@
 
 Todas as mudanças relevantes deste pacote, no formato [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 com versionamento [SemVer](https://semver.org/lang/pt-BR/).
+## [1.14.1] — 2026-10-20
+### Alterado
+- Bloco herdado `engineering/iam-desenho:invariantes` sincronizado: passkey padrão na fase 0 e matriz de acesso por rota.
+
 
 ## [1.14.0] — 2026-10-14
 Gates de script com vermelho plantado, bugs reais achados por eles corrigidos e IAM/Postgres/API apontando para as skills donas.
