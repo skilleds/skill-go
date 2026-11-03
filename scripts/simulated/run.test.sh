@@ -100,6 +100,13 @@ printf '{"cliente_pj":{"token":null}}\n' > "$Q/personas.json"
 OUT="$(run_sim "$Q")"; z=$?
 if [ "$z" -eq 1 ] && grep -q 'REVIEW=2' <<<"$OUT"; then echo "  ✔ 2 REVIEW ('sem contrato de acesso')"; else echo "  ✖ saiu $z: $OUT"; rc=1; fi
 
+echo "── ESQUEMA: URL que não é http/https é recusada com erro claro (nunca abre file:)"
+S="$WORK/esquema"; mkdir -p "$S"
+cp "$K/routes.json" "$S/routes.json"; cp "$K/personas.json" "$S/personas.json"
+OUT="$( cp "$HERE/run.py" "$S/run.py"; cd "$S" && PROJECT_TEST_API_BASE="file:///etc" \
+  PROJECT_TEST_LOG_DIR="$S/logs" PROJECT_SIM_SKIP_MUTATIONS=1 python3 run.py 2>&1 )"; z=$?
+if [ "$z" -eq 1 ] && grep -q "esquema 'file' recusada" <<<"$OUT" && [ ! -d "$S/logs" ]; then echo "  ✔ exit 1, 'só http/https' e nada executado"; else echo "  ✖ saiu $z: $OUT"; rc=1; fi
+
 echo
 [ $rc -eq 0 ] && echo "✔ simulated/run.test.sh: todos os casos" || echo "✖ simulated/run.test.sh: falhou"
 exit $rc

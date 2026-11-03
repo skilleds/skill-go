@@ -28,6 +28,7 @@ import pathlib
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 # --- config ------------------------------------------------------------------
@@ -72,6 +73,36 @@ DEFAULT_INJECTIONS = {
 }
 
 
+def emit(msg, err=False):
+    """Única saída do runner (stdout; stderr com err=True) — sem print."""
+    (sys.stderr if err else sys.stdout).write(f"{msg}\n")
+
+
+ALLOWED_SCHEMES = ("http", "https")
+
+
+def check_scheme(url):
+    """Rejeita qualquer esquema que não seja http/https (file:, ftp:, data:…) antes de abrir a URL."""
+    scheme = urllib.parse.urlsplit(str(url)).scheme.lower()
+    if scheme not in ALLOWED_SCHEMES:
+        raise ValueError(
+            f"URL com esquema '{scheme or '<vazio>'}' recusada ({url!r}) — só http/https."
+        )
+    return scheme
+
+
+class SafeRequest(urllib.request.Request):
+    """Request que só nasce para http/https (valida o esquema antes de qualquer abertura)."""
+
+    def __init__(self, url, *args, **kwargs):
+        check_scheme(url)
+        super().__init__(url, *args, **kwargs)
+
+
+# opener sem file:/ftp: — só http/https chegam à rede
+OPENER = urllib.request.build_opener(urllib.request.HTTPHandler, urllib.request.HTTPSHandler)
+
+
 def load_json(name, default):
     p = HERE / name
     if p.exists():
@@ -84,9 +115,9 @@ def load_route_catalog():
     Formato esperado: [{"method","path","category","mutates"(bool)}]."""
     cat = load_json("routes.json", None)
     if cat is None:
-        print(
+        emit(
             "AVISO: routes.json ausente — gere o catalog do OpenAPI/dispatcher.",
-            file=sys.stderr,
+            err=True,
         )
         cat = []
     if MAX_ROUTES:
@@ -107,21 +138,25 @@ def preflight():
 
     Aborta com exit 1 e mensagem acionável; nunca com warning.
     """
-    env = (
-        (os.environ.get("APP_ENV") or os.environ.get("PROJECT_ENV") or "")
-        .strip()
-        .lower()
-    )
+    env = (os.environ.get("APP_ENV") or os.environ.get("PROJECT_ENV") or "").strip().lower()
     provider = (os.environ.get("MAIL_PROVIDER") or "").strip().lower()
     dominio = os.environ.get("TEST_MAIL_DOMAIN", "").strip()
     cap = os.environ.get("MAIL_MAX_PER_RUN", "").strip()
     erros = []
 
-    # 1) produção exige confirmação explícita — fail-closed: env ausente NÃO é "seguro por acaso"
-    if (
-        env in ("prd", "prod", "production")
-        and os.environ.get("PROJECT_SIM_ALLOW_PRD") != "1"
+    # 0) esquema das URLs de alvo: só http/https (recusa file:, ftp:… com erro claro)
+    for nome, valor in (
+        ("PROJECT_TEST_API_BASE", API_BASE),
+        ("PROJECT_SIM_SERVED_URL", os.environ.get("PROJECT_SIM_SERVED_URL")),
     ):
+        if valor:
+            try:
+                check_scheme(valor)
+            except ValueError as e:
+                erros.append(f"{nome}: {e}")
+
+    # 1) produção exige confirmação explícita — fail-closed: env ausente NÃO é "seguro por acaso"
+    if env in ("prd", "prod", "production") and os.environ.get("PROJECT_SIM_ALLOW_PRD") != "1":
         erros.append(
             "APP_ENV é produção e PROJECT_SIM_ALLOW_PRD != 1 — o simulated não roda em prd sem confirmação explícita."
         )
@@ -143,14 +178,12 @@ def preflight():
             )
 
     if erros:
-        print(
-            "PRÉ-FLIGHT FALHOU — nada foi enviado, nada foi executado:", file=sys.stderr
-        )
+        emit("PRÉ-FLIGHT FALHOU — nada foi enviado, nada foi executado:", err=True)
         for e in erros:
-            print(f"  - {e}", file=sys.stderr)
-        print(
+            emit(f"  - {e}", err=True)
+        emit(
             "\nAjuste o ambiente ou rode com PROJECT_SIM_SKIP_MUTATIONS=1 (só GET).",
-            file=sys.stderr,
+            err=True,
         )
         sys.exit(1)
 
@@ -163,9 +196,7 @@ def served_routes():
     do catalog. Devolve (conjunto_de_rotas, origem) ou (None, motivo) quando NÃO foi possível
     descobrir — e nesse caso o run REPROVA, em vez de dar cobertura total por omissão (A1).
     """
-    url = os.environ.get("PROJECT_SIM_SERVED_URL") or (
-        API_BASE.rstrip("/") + "/openapi.json"
-    )
+    url = os.environ.get("PROJECT_SIM_SERVED_URL") or (API_BASE.rstrip("/") + "/openapi.json")
     code, text, _ = request("GET", "", token=None, body=None, absolute=url)
     if code == 200:
         try:
@@ -176,8 +207,7 @@ def served_routes():
                     (m.upper(), p)
                     for p, ops in paths.items()
                     for m in ops
-                    if m.lower()
-                    in ("get", "post", "put", "patch", "delete", "head", "options")
+                    if m.lower() in ("get", "post", "put", "patch", "delete", "head", "options")
                 }
                 return out, f"OpenAPI em {url}"
         except (ValueError, AttributeError):
@@ -200,14 +230,15 @@ def request(method, path, token=None, body=None, absolute=None):
         headers["Content-Type"] = "application/json"
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    # SafeRequest levanta ValueError claro — não vira "evidência" do except abaixo.
+    req = SafeRequest(url, data=data, headers=headers, method=method)
     t0 = time.time()
     try:
-        with urllib.request.urlopen(req, timeout=15) as r:
+        with OPENER.open(req, timeout=15) as r:
             code, text = r.status, r.read(8192).decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
         code, text = e.code, e.read(8192).decode("utf-8", "replace")
-    except Exception as e:  # noqa: BLE001 — conexão/timeout vira evidência, não crash
+    except Exception as e:  # conexão/timeout vira evidência, não crash
         code, text = 0, f"__error__ {e}"
     return code, text, round((time.time() - t0) * 1000)
 
@@ -241,7 +272,7 @@ def classify(category, persona, code, body, injected, personas):
 
 def main():
     preflight()  # fail-closed ANTES de qualquer request (schematize-qa -> references/execucao.md §5.4)
-    ts = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d-%H%M%S")
+    ts = dt.datetime.now(dt.UTC).strftime("%Y-%m-%d-%H%M%S")
     out = LOG_DIR / f"simulated-{ts}"
     out.mkdir(parents=True, exist_ok=True)
 
@@ -252,9 +283,7 @@ def main():
     raw_fh = (out / "raw.jsonl").open("w")
     reviews, autos = [], 0
     tested_paths = set()
-    responded_paths = (
-        set()
-    )  # rota que deu QUALQUER resposta HTTP (mesmo 401/403/404 do servidor)
+    responded_paths = set()  # rota que deu QUALQUER resposta HTTP (mesmo 401/403/404 do servidor)
 
     for route in catalog:
         method, path = route["method"], route["path"]
@@ -289,13 +318,9 @@ def main():
                 for inj_name, payloads in injections.items():
                     for p in payloads:
                         body_payload = p if isinstance(p, dict) else {"q": p}
-                        code, body, ms = request(
-                            method, path, token=token, body=body_payload
-                        )
+                        code, body, ms = request(method, path, token=token, body=body_payload)
                         injected = p if isinstance(p, str) else None
-                        verdict, why = classify(
-                            category, persona, code, body, injected, personas
-                        )
+                        verdict, why = classify(category, persona, code, body, injected, personas)
                         rec = {
                             "route": f"{method} {path}",
                             "category": category,
@@ -313,9 +338,7 @@ def main():
 
     # --- reconciliação de cobertura (MUST — schematize-qa · references/categorias.md) -----------------------------
     catalog_paths = {(r["method"], r["path"]) for r in catalog}
-    not_exercised = sorted(
-        catalog_paths - tested_paths
-    )  # no catalog e nem chegou a ser chamada
+    not_exercised = sorted(catalog_paths - tested_paths)  # no catalog e nem chegou a ser chamada
     # Rota MORTA: está no catalog, foi exercida e o servidor não a serve em nenhuma persona.
     dead = sorted((catalog_paths & tested_paths) - responded_paths) + not_exercised
     # Rota FANTASMA: servida pelo alvo e ausente do catalog. Sem fonte de descoberta NÃO existe
@@ -326,9 +349,7 @@ def main():
         ghost_status = f"INDISPONIVEL — {served_origem}"
     else:
         ghost = sorted(served - catalog_paths)
-        ghost_status = (
-            f"reconciliado por {served_origem} ({len(served)} rotas servidas)"
-        )
+        ghost_status = f"reconciliado por {served_origem} ({len(served)} rotas servidas)"
 
     summary = {
         "started_at": ts,
@@ -371,13 +392,10 @@ def main():
     # Cobertura TOTAL exige reconciliação FEITA. `served is None` (sem fonte) não pode virar
     # "sem rota fantasma": era exatamente o verde vacuamente verdadeiro do A1.
     full_coverage = (
-        len(catalog_paths) > 0
-        and len(dead) == 0
-        and served is not None
-        and len(ghost) == 0
+        len(catalog_paths) > 0 and len(dead) == 0 and served is not None and len(ghost) == 0
     )
     ok = (len(reviews) == 0) and full_coverage
-    print(
+    emit(
         f"simulated: AUTO={autos} REVIEW={len(reviews)} "
         f"dead={len(dead)} ghost={len(ghost)} ({ghost_status}) "
         f"cobertura={'total' if full_coverage else 'INCOMPLETA'} → {out}"
