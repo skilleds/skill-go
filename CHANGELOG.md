@@ -2,7 +2,7 @@
 
 Todas as mudanças relevantes deste pacote, no formato [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 com versionamento [SemVer](https://semver.org/lang/pt-BR/).
-## [Não lançado]
+## [1.15.0] — 2026-11-03
 ### Corrigido
 - **P0-3 — cap de e-mail em prd derrubava o OTP de login.** O guard (`references/iam.md` §3.1) aplicava o cap por execução (default 50, contador de vida do processo) também em prd: após o 50º envio o IdP devolvia erro até reiniciar. Agora o **cap vale SÓ fora de prd**; em prd o guard é fail-closed por destinatário (endereço único e bem formado) e a proteção é **rate-limit por destinatário (janela deslizante) + idempotência (`IdempotencyKey`) + circuit breaker do provider**, sem teto de 50. Código, composição, DoD, SKILL.md, `assets/CLAUDE.md`, `entrega.md` e anti-padrão ajustados. Teste novo `scripts/iam-guard.test.sh` compila e roda o exemplo do doc (vermelho comprovado reintroduzindo o cap em prd).
 - **Guard por último `@` (P1-8):** `"vitima@gmail.com, qa@test.dominio"` passava pelo domínio de teste. Novo `parse*Recipient` recusa lista, `;`, `<>`, aspas, espaço e CR/LF em TODOS os ambientes (`ErrInvalidRecipient`/`InvalidRecipient`); `redact` só sobre endereço validado.
