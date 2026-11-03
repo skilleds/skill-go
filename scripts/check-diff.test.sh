@@ -49,6 +49,56 @@ plant "teste pulado" web/p.ts 'it.skip("x", () => {})' 1 "teste pulado"
 plant "SQL por concatenação" svc/q.go 'db.Query("SELECT * FROM u WHERE id=" + req.ID)' 1 "SQL"
 plant "PHP no diff" legado/x.php '<?php echo 1;' 1 "PHP"
 
+echo "── VERMELHO: vetos de LINGUAGEM (Rust)"
+plant "Rust: unwrap() em produção" svc/a.rs 'fn f(x: Option<i32>) -> i32 { x.unwrap() }' 1 "unwrap"
+plant "Rust: expect() em produção" svc/a.rs 'fn f(x: Option<i32>) -> i32 { x.expect("boom") }' 1 "unwrap"
+plant "Rust: let _ = descarta Result" svc/a.rs 'fn f() { let _ = g(); }' 1 "let _"
+plant "Rust: #[ignore] em teste (arquivo tests/)" svc/tests/it.rs '#[ignore]
+#[test] fn t() {}' 1 "ignore"
+plant "Rust: #[ignore] em teste inline" svc/b.rs '#[cfg(test)]
+mod tests {
+    #[ignore]
+    #[test] fn t() {}
+}' 1 "ignore"
+plant "Rust: SQL com format!" svc/q.rs 'fn q(id: i32) -> String { format!("SELECT * FROM u WHERE id = {id}") }' 1 "format!"
+echo "── VERDE: Rust legítimo"
+plant "Rust: unwrap só em #[cfg(test)] no fim do arquivo é isento" svc/ok.rs 'pub fn soma(a: i32, b: i32) -> i32 { a + b }
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn t() { let v: Option<i32> = Some(1); assert_eq!(v.unwrap(), 1); }
+}' 0 "check-diff: OK"
+plant "Rust: expect com check-diff:allow e motivo passa" svc/ok2.rs 'static R: &str = "x"; fn f() { let _r = regex().expect("padrão fixo validado no boot"); } // check-diff:allow: regex constante' 0
+plant "Rust: allow SEM motivo não vale" svc/no.rs 'fn f(x: Option<i32>) -> i32 { x.unwrap() } // check-diff:allow:' 1 "unwrap"
+plant "Rust: let _guard = (guard RAII) não é descarte" svc/g.rs 'fn f() { let _guard = lock(); }' 0
+
+echo "── VERMELHO: vetos de LINGUAGEM (Go)"
+plant "Go: t.Skip em _test.go (antes era código morto)" svc/a_test.go 'func TestX(t *testing.T) { t.Skip("depois") }' 1 "t.Skip"
+plant "Go: _ = err" svc/e.go 'func f() { err := g(); _ = err }' 1 "_ = err"
+plant "Go: //nolint sem justificativa" svc/n2.go 'defer rows.Close() //nolint:errcheck' 1 "nolint"
+plant "Go: panic fora de main" svc/p.go 'func f() { panic("x") }' 1 "panic"
+plant "Go: math/rand em arquivo de token" svc/r.go 'import "math/rand"
+func newToken() int { return rand.Int() }' 1 "math/rand"
+echo "── VERDE: Go legítimo"
+plant "Go: //nolint com justificativa passa" svc/n3.go 'defer rows.Close() //nolint:errcheck // leitura já consumida; erro de Close irrelevante' 0
+plant "Go: panic com check-diff:allow e motivo passa" svc/p2.go 'func mustInit() { panic("config ausente") } // check-diff:allow: falha de boot' 0
+plant "Go: math/rand em arquivo SEM segredo (jitter) passa" svc/j.go 'import "math/rand"
+func jitter() int { return rand.Intn(100) }' 0
+
+echo "── MODO PRE-COMMIT (--staged) e o falso verde de base==HEAD"
+staged() { # staged "descrição" arquivo "conteúdo" rc padrão  — NÃO comita: o hook roda antes do commit
+  new_repo; mkdir -p "$(dirname "$2")"; printf '%s\n' "$3" > "$2"; git add -A
+  local out; out=$(bash "$HERE/check-diff.sh" --staged 2>&1); expect "$1" "$4" $? "$out" "${5:-}"
+}
+staged "staged: violação no INDEX reprova (o hook enxerga)" svc/t.go 'var _ = tls.Config{InsecureSkipVerify: true}' 1 "TLS"
+staged "staged: unwrap() no INDEX reprova" svc/a.rs 'fn f(x: Option<i32>) -> i32 { x.unwrap() }' 1 "unwrap"
+staged "staged: diff limpo passa" svc/ok.go 'package svc
+func Soma(a, b int) int { return a + b }' 0 "check-diff: OK"
+new_repo; printf 'var _ = tls.Config{InsecureSkipVerify: true}\n' > t.go; git add -A
+out=$(bash "$HERE/check-diff.sh" HEAD 2>&1); expect "base==HEAD (hook antigo 'check-diff.sh HEAD') reprova em vez de dar falso verde" 1 $? "$out" "próprio HEAD"
+new_repo; out=$(bash "$HERE/check-diff.sh" HEAD --allow-empty 2>&1); expect "base==HEAD com --allow-empty é aceito conscientemente" 0 $? "$out"
+new_repo; printf 'x\n' > a.txt; git add -A; out=$(bash "$HERE/check-diff.sh" --staged 2>&1); expect "staged só de docs passa" 0 $? "$out"
+
 echo "── VERMELHO: tamanho de arquivo"
 new_repo; mkdir -p svc
 { echo 'package svc'; for i in $(seq 1 800); do echo "var v$i = $i"; done; } > svc/big.go; commit_feat
