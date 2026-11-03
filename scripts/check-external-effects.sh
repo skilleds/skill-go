@@ -54,7 +54,7 @@ if (( ${#ALVOS[@]} > 0 )); then
     block "endereço de e-mail em domínio de caixa REAL em artefato de teste/seed/fixture:"
     echo "$HITS" | sed 's/^/    /' | head -40
     echo "    → troque pelo domínio de teste em ROTA NULA (\$TEST_MAIL_DOMAIN, null MX)"
-    echo "      ou por TLD reservado (.test/.invalid/.example) — references/efeitos-externos.md"
+    echo "      ou por TLD reservado (.test/.invalid/.example) — schematize-engineering -> references/efeitos-externos.md"
   fi
 fi
 
