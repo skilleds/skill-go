@@ -1,0 +1,27 @@
+# schematize-go — pre-commit (pip install pre-commit && pre-commit install).
+# Copie para .pre-commit-config.yaml na raiz do repo.
+# Este é o gate POR COMMIT (piso 27: o CI remoto só roda antes do hml). `--staged` olha o INDEX;
+# `check-diff.sh HEAD` comparava HEAD com HEAD (diff vazio, sempre verde) — não use.
+repos:
+  - repo: local
+    hooks:
+      - id: archive-secret-scan
+        name: scan de segredo/PII no archive (§16.1/§32)
+        entry: bash .claude/skills/schematize-go/scripts/archive-secret-scan.sh .
+        language: system
+        pass_filenames: false
+      - id: standards-gate
+        name: gate de padrões no que vai ser commitado (§35/§37)
+        entry: bash .claude/skills/schematize-go/scripts/check-diff.sh --staged
+        language: system
+        pass_filenames: false
+      - id: gofmt
+        name: gofmt (formatação)
+        entry: bash -c 'out=$(gofmt -l .); [ -z "$out" ] || { echo "gofmt: arquivos fora do formato:"; echo "$out"; exit 1; }'
+        language: system
+        pass_filenames: false
+      - id: golangci-lint
+        name: golangci-lint (assets/lint/.golangci.yml)
+        entry: golangci-lint run --config .golangci.yml ./...
+        language: system
+        pass_filenames: false
