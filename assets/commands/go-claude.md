@@ -12,4 +12,4 @@ Sincronize o **`CLAUDE.md` da raiz** deste repositório com a versão **atual** 
 4. **Se não existe:** crie `./CLAUDE.md` a partir do `assets/CLAUDE.md` da skill.
 5. Confirme ao usuário: caminho, se **sobrescreveu** ou **mesclou**, e se gerou backup.
 
-Este é o jeito **explícito de atualizar um `CLAUDE.md` que já existe** — rodar não pode deixar a versão antiga. Em repo full-stack, rode também o comando do lado correspondente (este é o de backend Go; o frontend vem do `schematize-web`, o Rust-first do `schematize-rust`).
+Este é o jeito **explícito de atualizar um `CLAUDE.md` que já existe** — rodar não pode deixar a versão antiga. Em repo full-stack, rode também o comando do lado correspondente (este é o de backend Go; o frontend vem do `schematize-web`, o de Rust vem do `schematize-rust`, quando o fit mandar).

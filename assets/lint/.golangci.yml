@@ -21,6 +21,10 @@ linters:
     - errcheck        # erro nunca engolido (§37)
     - ineffassign
     - unparam
+    - errorlint       # %w + errors.Is/As em vez de == / type assertion em erro (SKILL.md: erro nunca engolido)
+    - noctx           # request HTTP sem context (concorrencia.md C1)
+    - contextcheck    # ctx propagado, sem context.Background() no meio da cadeia (concorrencia.md C1)
+    - bodyclose       # resp.Body fechado (e drenado) — vazamento de conexao
   settings:
     gocyclo:
       min-complexity: 15          # padroes-codigo.md §3.1: ciclomatica > 15 BLOQUEIA

@@ -44,7 +44,7 @@ transformava a skill num veto sobre as irmãs.)*
 
 - **Backend novo só em linguagem do rol sancionado, com ADR de fit.** Nenhum serviço backend novo em Node.
 
-- **Não há default por gosto.** A escolha sai do guia de fit (`schematize-engineering` → `references/linguagens.md`) e vira ADR. Em empate técnico real, vence a linguagem que o time já opera em produção — e isso também vai no ADR, como o critério que foi.
+- **Não há default por gosto.** A escolha sai do guia de fit (`schematize-engineering` → `references/linguagens.md`) e vira ADR. O desempate é o da base (`references/linguagens.md`: onde errar é caro → o que o time já opera → menor custo operacional) e o critério usado vai no ADR; esta skill não reescreve essa regra.
 
 ### 3.1 Node legado (backend) — saída para o rol
 

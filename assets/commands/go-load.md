@@ -9,6 +9,8 @@ Carregue **à força** e passe a aplicar **integralmente** os Padrões de Engenh
    - `arquitetura.md` — **DDD**, camadas, repositórios, bounded contexts, anti-monólito, shared libs, CQRS, escolha de linguagem.
    - `seguranca.md` — auth/JWT, multi-tenancy, LGPD, segredo nunca no cliente, SQL parametrizado.
    - `iam.md` — **IAM da casa (recorte Go)**: auth como microserviço Go separado (`auth.<domain>`), ID≠email, ≥2 fatores (passkey/Resend/Twilio), ReBAC multi-tenant deny-default (PEP=middleware Go), sessão 7d/90d, logout irreversível, migração de legado prioridade 0.
+   - `concorrencia.md` — `context`, `errgroup`, goroutines sem leak, `goleak`/`synctest`, race detector (C1–C7).
+   - `stack-versoes.md` — versões e limiares voláteis (Go, toolchain, ferramental).
    - `dados-eventos.md` — eventos/mensageria, banco, cache, APIs, resiliência, jobs.
    - `cadeia-suprimentos.md` — lockfile, SBOM, scan que trava, imagem mínima/pinada/assinada, SLSA.
    - `testes.md` — test kit, "verde de verdade", pentest, Q.A. plan-first.
