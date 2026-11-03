@@ -104,8 +104,12 @@ OTP de login deste próprio IAM**. Semanas de warm-up, utilidade zero, sem undo.
 3. Ele **retorna `error`** — nunca `nil` silencioso, nunca só um `slog.Warn`. Casa com o piso
    "erro nunca engolido": quem chamou trata o `error` ou o propaga.
 
-4. **Cap por execução** com contador atômico (`MAIL_MAX_PER_RUN`, default 50) — os 5.000 só
-   existiram porque **nada estava contando**.
+4. **Cap por execução SÓ fora de prd** (contador atômico, `MAIL_MAX_PER_RUN`, default 50) — os
+   5.000 só existiram porque **nada estava contando**. **Em prd NÃO há teto por processo**: o IdP
+   é serviço de longa duração e um cap de vida do processo derrubaria o **OTP de login** depois do
+   50º envio. Em prd o guard é **fail-closed por destinatário/domínio** (endereço único e bem
+   formado) e a proteção é **rate-limit por destinatário, idempotência e circuit breaker**; o
+   volume agregado vira alerta.
 
 **Endereço sintético:** `<papel>+<run-id>-<n>@test.<domain>` (ou TLD reservado `.test`/
 `.invalid`/`.example`). **VETADO** em fixture/seed/persona/demo/carga: `@gmail.com`,
@@ -124,6 +128,9 @@ type Message struct {
 	To      string
 	Subject string
 	Body    string
+	// IdempotencyKey identifica o PEDIDO (ex.: id do desafio OTP). Em prd, a reentrega com a
+	// mesma chave não envia de novo. Vazio ⇒ sem deduplicação.
+	IdempotencyKey string
 }
 
 // EmailProvider é a porta. Toda impl (real, sink, guard) satisfaz esta interface,
@@ -136,8 +143,14 @@ type EmailProvider interface {
 var (
 	// ErrExternalRecipientBlocked = destinatário fora do domínio de teste com env != prd.
 	ErrExternalRecipientBlocked = errors.New("mail: destinatário externo bloqueado fora de prd")
-	// ErrRunCapExceeded = teto de envios desta execução estourado (circuit breaker).
+	// ErrRunCapExceeded = teto de envios desta execução estourado (circuit breaker). SÓ fora de prd.
 	ErrRunCapExceeded = errors.New("mail: cap de envio por execução estourado")
+	// ErrInvalidRecipient = destinatário não é UM endereço simples (lista, CR/LF, "<>", malformado).
+	ErrInvalidRecipient = errors.New("mail: destinatário inválido")
+	// ErrRecipientRateLimited = rate-limit por destinatário estourado (prd).
+	ErrRecipientRateLimited = errors.New("mail: rate-limit por destinatário")
+	// ErrCircuitOpen = circuit breaker do provider aberto (prd): falha rápida, sem martelar.
+	ErrCircuitOpen = errors.New("mail: circuit breaker aberto")
 )
 
 // Env é o ambiente resolvido. ParseEnv é FAIL-CLOSED: valor ausente, vazio ou
@@ -233,75 +246,221 @@ func (p *ResendProvider) Send(ctx context.Context, msg Message) error {
 }
 ```
 
-### O guard — decorator, deny-by-default, com cap atômico
+### O guard — decorator, deny-by-default; cap SÓ fora de prd, rate-limit/breaker em prd
+
+O guard tem **dois regimes**, escolhidos por `Env` (fail-closed: ambiente desconhecido ⇒ não-prd):
+
+| | fora de prd (dev/hml) | prd |
+|---|---|---|
+| Destinatário | **só** o domínio de teste (rota nula); o resto é `error` | **fail-closed por destinatário/domínio**: endereço único e bem formado, senão `error` |
+| Volume | **cap por execução** (`MaxPerRun`, default 50) — circuit breaker de laço de teste | **sem teto fixo por processo**: rate-limit por destinatário (janela deslizante), idempotência por chave e circuit breaker do provider |
+| Por quê | os 5.000 e-mails só existiram porque nada contava | o IdP é serviço de longa duração: um teto de vida do processo derrubaria o **OTP de login** depois do N-ésimo envio (autoataque de disponibilidade) |
+
+Em prd o volume agregado é **alerta** (`mail_sent_total`, `mail_blocked_total` — normativa
+`schematize-engineering` → `references/efeitos-externos.md`), não teto duro.
 
 ```go
+// PrdLimits é a proteção de PRD. NÃO existe teto de envios por processo em prd.
+// Zero value ⇒ defaults (fail-closed: "não configurei" não vira "ilimitado").
+type PrdLimits struct {
+	PerRecipient    int           // máx. envios ao MESMO destinatário por janela (default 5)
+	Window          time.Duration // janela deslizante (default 10m)
+	BreakerFailures int           // falhas seguidas do provider que abrem o breaker (default 5)
+	BreakerCooldown time.Duration // tempo com o breaker aberto (default 30s)
+}
+
+// GuardConfig: cada ambiente usa só o seu pedaço.
+type GuardConfig struct {
+	Env         Env
+	TestDomains []string         // fora de prd: únicos domínios entregáveis
+	MaxPerRun   int              // SÓ fora de prd (<=0 ⇒ 50); IGNORADO em prd
+	Prd         PrdLimits        // SÓ em prd
+	Now         func() time.Time // nil ⇒ time.Now (o teste injeta relógio)
+}
+
 // guarded embrulha um EmailProvider e é o ÚNICO ponto que decide se a mensagem
 // pode sair. Não é exportado de propósito: constrói-se por Guarded, então não dá
 // pra montar um provider "sem guard" por engano.
 type guarded struct {
-	next        EmailProvider
-	env         Env
-	testDomains []string
-	maxPerRun   int64
-	sent        atomic.Int64 // contador por execução do processo
+	next EmailProvider
+	cfg  GuardConfig
+	sent atomic.Int64 // contador da execução — SÓ fora de prd
+
+	mu        sync.Mutex             // protege o estado de prd abaixo
+	hits      map[string][]time.Time // destinatário -> instantes de envio na janela
+	seen      map[string]time.Time   // chave de idempotência -> instante
+	fails     int                    // falhas seguidas do provider
+	openUntil time.Time              // breaker aberto até
 }
 
-// Guarded devolve o provider embrulhado. Aplique-o em TODOS os ambientes: em prd o
-// guard de domínio é no-op, mas o CAP continua valendo (laço maluco também existe em prd).
-// maxPerRun <= 0 cai no default 50 — fail-closed: "não configurei" não vira "ilimitado".
+// Guarded devolve o provider embrulhado. Aplique-o em TODOS os ambientes (a validação do
+// destinatário vale em todos); o que muda por ambiente está na tabela acima.
 //
-// O parâmetro NÃO se chama `cap`: `cap` é builtin do Go, e sombreá-lo dentro desta função
-// tornaria `cap(slice)` inacessível aqui — o compilador não reclama, e o próximo a mexer
-// descobre no lugar errado. Vale o mesmo para `len`, `new`, `max`, `min` e `copy`.
-func Guarded(p EmailProvider, env Env, testDomains []string, maxPerRun int) EmailProvider {
-	if maxPerRun <= 0 {
-		maxPerRun = 50
+// O campo NÃO se chama `cap`: `cap` é builtin do Go, e sombreá-lo tornaria `cap(slice)`
+// inacessível — o compilador não reclama, e o próximo a mexer descobre no lugar errado.
+// Vale o mesmo para `len`, `new`, `max`, `min` e `copy`.
+func Guarded(p EmailProvider, cfg GuardConfig) EmailProvider {
+	if cfg.MaxPerRun <= 0 {
+		cfg.MaxPerRun = 50
 	}
-	normalized := make([]string, 0, len(testDomains))
-	for _, d := range testDomains {
+	if cfg.Prd.PerRecipient <= 0 {
+		cfg.Prd.PerRecipient = 5
+	}
+	if cfg.Prd.Window <= 0 {
+		cfg.Prd.Window = 10 * time.Minute
+	}
+	if cfg.Prd.BreakerFailures <= 0 {
+		cfg.Prd.BreakerFailures = 5
+	}
+	if cfg.Prd.BreakerCooldown <= 0 {
+		cfg.Prd.BreakerCooldown = 30 * time.Second
+	}
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
+	normalized := make([]string, 0, len(cfg.TestDomains))
+	for _, d := range cfg.TestDomains {
 		normalized = append(normalized, strings.ToLower(strings.TrimSpace(d)))
 	}
-	return &guarded{next: p, env: env, testDomains: normalized, maxPerRun: int64(maxPerRun)}
+	cfg.TestDomains = normalized
+	return &guarded{
+		next: p, cfg: cfg,
+		hits: map[string][]time.Time{}, seen: map[string]time.Time{},
+	}
 }
 
-// Send aplica, nessa ordem: deny-by-default de destinatário, cap por execução e só
-// então delega. Qualquer recusa devolve error — nunca warning, nunca no-op silencioso.
+// Send valida o destinatário (todos os ambientes) e aplica o regime do ambiente.
+// Qualquer recusa devolve error — nunca warning, nunca no-op silencioso.
 func (g *guarded) Send(ctx context.Context, msg Message) error {
-	if err := g.assertDeliverable(msg.To); err != nil {
+	addr, domain, err := parseRecipient(msg.To)
+	if err != nil {
 		return err
 	}
-	if n := g.sent.Add(1); n > g.maxPerRun {
+	if g.cfg.Env == EnvPrd {
+		return g.sendPrd(ctx, msg, addr)
+	}
+	if err := g.assertTestDomain(addr, domain); err != nil {
+		return err
+	}
+	if n := g.sent.Add(1); n > int64(g.cfg.MaxPerRun) {
 		return fmt.Errorf("%w: tentativa %d, teto %d (MAIL_MAX_PER_RUN). Nada foi enviado",
-			ErrRunCapExceeded, n, g.maxPerRun)
+			ErrRunCapExceeded, n, g.cfg.MaxPerRun)
 	}
 	return g.next.Send(ctx, msg)
 }
 
-// assertDeliverable é o guard propriamente dito: em prd entrega de verdade; fora de
-// prd só passa endereço no domínio de teste (rota nula). Endereço malformado também
-// é recusa — deny-by-default. A mensagem de erro ENSINA o caminho certo
-		// (§37, "Culpar o usuário / exigir que ele saiba de internals").
-func (g *guarded) assertDeliverable(to string) error {
-	if g.env == EnvPrd {
-		return nil
+// sendPrd: rate-limit por destinatário, idempotência e circuit breaker. O que é bloqueado
+// aqui volta como error para o chamador enfileirar/tentar depois (outbox) — nunca é perdido
+// em silêncio, e o OTP legítimo de um usuário nunca esbarra num teto global de processo.
+func (g *guarded) sendPrd(ctx context.Context, msg Message, addr string) error {
+	now := g.cfg.Now()
+	win := g.cfg.Prd.Window
+
+	g.mu.Lock()
+	if now.Before(g.openUntil) {
+		g.mu.Unlock()
+		return fmt.Errorf("%w: provider instável, tente após %s. Nada foi enviado",
+			ErrCircuitOpen, g.openUntil.Format(time.RFC3339))
+	}
+	if k := msg.IdempotencyKey; k != "" {
+		if t, ok := g.seen[k]; ok && now.Sub(t) < win {
+			g.mu.Unlock()
+			return nil // reentrega do mesmo pedido: já enviado/reservado, não envia de novo
+		}
+	}
+	hits := pruneWindow(g.hits[addr], now, win)
+	if len(hits) >= g.cfg.Prd.PerRecipient {
+		g.hits[addr] = hits
+		g.mu.Unlock()
+		return fmt.Errorf("%w: %d envios em %s para %s. Nada foi enviado",
+			ErrRecipientRateLimited, len(hits), win, redact(addr))
+	}
+	g.hits[addr] = append(hits, now)
+	if k := msg.IdempotencyKey; k != "" {
+		g.seen[k] = now // reserva ANTES de enviar: duas entregas concorrentes não duplicam
+	}
+	g.sweepLocked(now)
+	g.mu.Unlock()
+
+	err := g.next.Send(ctx, msg)
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if err != nil {
+		if k := msg.IdempotencyKey; k != "" {
+			delete(g.seen, k) // falhou: a próxima tentativa com a mesma chave pode enviar
+		}
+		if g.fails++; g.fails >= g.cfg.Prd.BreakerFailures {
+			g.openUntil = now.Add(g.cfg.Prd.BreakerCooldown)
+			g.fails = 0
+		}
+		return err
+	}
+	g.fails = 0
+	return nil
+}
+
+// pruneWindow descarta os instantes fora da janela (a fatia está em ordem crescente).
+func pruneWindow(ts []time.Time, now time.Time, win time.Duration) []time.Time {
+	i := 0
+	for i < len(ts) && now.Sub(ts[i]) >= win {
+		i++
+	}
+	return ts[i:]
+}
+
+// sweepLocked limita a memória do estado de prd: acima de 10 mil chaves, varre as vencidas.
+func (g *guarded) sweepLocked(now time.Time) {
+	if len(g.hits)+len(g.seen) < 10_000 {
+		return
+	}
+	for a, ts := range g.hits {
+		if ts = pruneWindow(ts, now, g.cfg.Prd.Window); len(ts) == 0 {
+			delete(g.hits, a)
+		} else {
+			g.hits[a] = ts
+		}
+	}
+	for k, t := range g.seen {
+		if now.Sub(t) >= g.cfg.Prd.Window {
+			delete(g.seen, k)
+		}
+	}
+}
+
+// parseRecipient é a validação de endereço de TODOS os ambientes: exatamente UM endereço
+// simples. Lista ("a@x, b@y"), nome de exibição, "<>", espaço e CR/LF são recusados — o
+// parser por "último @" deixava "vitima@gmail.com, qa@test.dominio" passar pelo domínio de
+// teste, e o provider real pode interpretar a lista (ou o CRLF) e entregar de verdade.
+func parseRecipient(to string) (addr, domain string, err error) {
+	bad := strings.Count(to, "@") != 1 || strings.ContainsAny(to, ", ;<>\"\r\n\t")
+	if !bad {
+		a, perr := netmail.ParseAddress(to) // import netmail "net/mail" (o pacote se chama mail)
+		bad = perr != nil || a.Address != to
 	}
 	at := strings.LastIndex(to, "@")
-	if at < 0 {
-		return fmt.Errorf("%w: %q não é um endereço válido", ErrExternalRecipientBlocked, redact(to))
+	if bad || !strings.Contains(to[at+1:], ".") {
+		return "", "", fmt.Errorf("%w: destinatário inválido (precisa ser UM endereço simples)", ErrInvalidRecipient)
 	}
-	domain := strings.ToLower(to[at+1:])
-	for _, t := range g.testDomains {
+	return strings.ToLower(to), strings.ToLower(to[at+1:]), nil
+}
+
+// assertTestDomain: fora de prd só passa endereço no domínio de teste (rota nula).
+// A mensagem de erro ENSINA o caminho certo (§37, "Culpar o usuário / exigir que ele
+// saiba de internals").
+func (g *guarded) assertTestDomain(addr, domain string) error {
+	for _, t := range g.cfg.TestDomains {
 		// domínio exato ou subdomínio dele (test.<domain> cobre a.test.<domain>).
 		if domain == t || strings.HasSuffix(domain, "."+t) {
 			return nil
 		}
 	}
 	return fmt.Errorf("%w: %s em env=%s. Use <papel>+<run-id>-<n>@%s (null MX) ou registre o ADR de exceção (as 5 condições). Nada foi enviado",
-		ErrExternalRecipientBlocked, redact(to), g.env, hintDomain(g.testDomains))
+		ErrExternalRecipientBlocked, redact(addr), g.cfg.Env, hintDomain(g.cfg.TestDomains))
 }
 
 // redact esconde a parte local do endereço: PII nunca vai crua pra log nem pra erro.
+// Só chamar com endereço JÁ validado por parseRecipient (entrada crua pode ter CR/LF).
 func redact(addr string) string {
 	at := strings.LastIndex(addr, "@")
 	if at <= 0 {
@@ -330,25 +489,41 @@ func newEmailProvider(cfg Config, log *slog.Logger) mail.EmailProvider {
 	} else {
 		base = mail.NewSinkProvider(log) // DEFAULT fora de prd
 	}
-	// O guard embrulha os dois casos: domínio (fora de prd) + cap (sempre).
-	return mail.Guarded(base, cfg.Env, cfg.TestMailDomains, cfg.MailMaxPerRun)
+	// O guard embrulha os dois casos. Fora de prd: domínio de teste + cap por execução.
+	// Em prd: rate-limit por destinatário + idempotência + breaker; MaxPerRun é IGNORADO.
+	return mail.Guarded(base, mail.GuardConfig{
+		Env:         cfg.Env,
+		TestDomains: cfg.TestMailDomains,
+		MaxPerRun:   cfg.MailMaxPerRun, // só não-prd
+		Prd:         mail.PrdLimits{}, // zero ⇒ defaults; ajuste por config se o volume pedir
+	})
 }
 ```
 
 O caso de uso do OTP recebe `mail.EmailProvider` por injeção e **não conhece ambiente**: ele
-só chama `Send` e **trata o `error`**. Não existe parâmetro `force`/`skipGuard` — bypass por
+só chama `Send` (com `IdempotencyKey` = id do desafio, para a reentrega não duplicar) e
+**trata o `error`** (`ErrCircuitOpen`/`ErrRecipientRateLimited` ⇒ enfileira no outbox e
+responde 202; nunca perde o OTP). Não existe parâmetro `force`/`skipGuard` — bypass por
 argumento é a porta que sempre acaba aberta em produção.
 
 ### O teste que vê o vermelho (`internal/platform/mail/guard_test.go`)
 
 ```go
 // spyProvider conta chamadas: prova que o provider real NÃO foi acionado.
-type spyProvider struct{ calls atomic.Int64 }
+type spyProvider struct {
+	calls atomic.Int64
+	err   atomic.Pointer[error] // se setado, Send falha com ele
+}
 
 func (s *spyProvider) Send(context.Context, mail.Message) error {
 	s.calls.Add(1)
+	if e := s.err.Load(); e != nil {
+		return *e
+	}
 	return nil
 }
+
+var testDomains = []string{"test.exemplo.com.br"}
 
 // TestGuard_RecusaDominioExterno prova o piso: em hml, e-mail pra caixa real é ERRO
 // e nada sai. Se este teste ficar verde por acidente (guard removido), o próximo
@@ -357,7 +532,7 @@ func TestGuard_RecusaDominioExterno(t *testing.T) {
 	t.Parallel()
 
 	spy := &spyProvider{}
-	provider := mail.Guarded(spy, mail.EnvHml, []string{"test.exemplo.com.br"}, 50)
+	provider := mail.Guarded(spy, mail.GuardConfig{Env: mail.EnvHml, TestDomains: testDomains})
 
 	err := provider.Send(context.Background(), mail.Message{
 		To: "alguem@gmail.com", Subject: "otp", Body: "123456",
@@ -371,12 +546,39 @@ func TestGuard_RecusaDominioExterno(t *testing.T) {
 	}
 }
 
-// TestGuard_CapAbortaExecucao prova o circuit breaker: o 3º envio com cap=2 falha.
+// TestGuard_RecusaListaEInjecao: o último "@" é de domínio de teste, mas o endereço é uma
+// LISTA (ou tem CR/LF). Tem que ser ErrInvalidRecipient, em hml E em prd, sem chamar o provider.
+func TestGuard_RecusaListaEInjecao(t *testing.T) {
+	t.Parallel()
+
+	for _, env := range []mail.Env{mail.EnvHml, mail.EnvPrd} {
+		for _, to := range []string{
+			"vitima@gmail.com, qa@test.exemplo.com.br",
+			"vitima@gmail.com;qa@test.exemplo.com.br",
+			"qa@test.exemplo.com.br\r\nBcc: vitima@gmail.com",
+			"Vitima <vitima@gmail.com>",
+		} {
+			spy := &spyProvider{}
+			provider := mail.Guarded(spy, mail.GuardConfig{Env: env, TestDomains: testDomains})
+
+			err := provider.Send(context.Background(), mail.Message{To: to, Subject: "otp", Body: "1"})
+
+			if !errors.Is(err, mail.ErrInvalidRecipient) {
+				t.Fatalf("env=%s to=%q: esperava ErrInvalidRecipient; veio %v", env, to, err)
+			}
+			if got := spy.calls.Load(); got != 0 {
+				t.Fatalf("env=%s to=%q: provider chamado %d vez(es); deveria ser 0", env, to, got)
+			}
+		}
+	}
+}
+
+// TestGuard_CapAbortaExecucao prova o circuit breaker FORA de prd: o 3º envio com cap=2 falha.
 func TestGuard_CapAbortaExecucao(t *testing.T) {
 	t.Parallel()
 
 	spy := &spyProvider{}
-	provider := mail.Guarded(spy, mail.EnvHml, []string{"test.exemplo.com.br"}, 2)
+	provider := mail.Guarded(spy, mail.GuardConfig{Env: mail.EnvHml, TestDomains: testDomains, MaxPerRun: 2})
 	msg := mail.Message{To: "qa+run42-1@test.exemplo.com.br", Subject: "otp", Body: "123456"}
 
 	for i := 1; i <= 2; i++ {
@@ -391,10 +593,112 @@ func TestGuard_CapAbortaExecucao(t *testing.T) {
 		t.Fatalf("provider real chamado %d vez(es); deveria ser 2", got)
 	}
 }
+
+// TestGuard_PrdNaoTemCapPorProcesso é o teste do furo P0-3: o cap de execução em prd derrubava
+// o OTP de login depois do 50º envio. Em prd, 500 usuários DIFERENTES recebem o OTP — o
+// MaxPerRun=2 (ignorado em prd) não pode barrar nenhum.
+func TestGuard_PrdNaoTemCapPorProcesso(t *testing.T) {
+	t.Parallel()
+
+	spy := &spyProvider{}
+	provider := mail.Guarded(spy, mail.GuardConfig{Env: mail.EnvPrd, MaxPerRun: 2})
+
+	for i := 0; i < 500; i++ {
+		to := fmt.Sprintf("user%d@cliente.com.br", i)
+		if err := provider.Send(context.Background(), mail.Message{To: to, Subject: "otp", Body: "1"}); err != nil {
+			t.Fatalf("envio %d em prd barrado (cap de processo não pode existir em prd): %v", i, err)
+		}
+	}
+	if got := spy.calls.Load(); got != 500 {
+		t.Fatalf("provider chamado %d vez(es); deveria ser 500", got)
+	}
+}
+
+// TestGuard_PrdRateLimitPorDestinatario: o laço que martela UM endereço é contido, e a janela
+// deslizante libera de novo depois (relógio injetado, sem sleep).
+func TestGuard_PrdRateLimitPorDestinatario(t *testing.T) {
+	t.Parallel()
+
+	spy := &spyProvider{}
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	provider := mail.Guarded(spy, mail.GuardConfig{
+		Env: mail.EnvPrd, Now: func() time.Time { return now },
+		Prd: mail.PrdLimits{PerRecipient: 2, Window: time.Minute},
+	})
+	msg := mail.Message{To: "ana@cliente.com.br", Subject: "otp", Body: "1"}
+
+	for i := 1; i <= 2; i++ {
+		if err := provider.Send(context.Background(), msg); err != nil {
+			t.Fatalf("envio %d dentro do limite falhou: %v", i, err)
+		}
+	}
+	if err := provider.Send(context.Background(), msg); !errors.Is(err, mail.ErrRecipientRateLimited) {
+		t.Fatalf("esperava ErrRecipientRateLimited no 3º envio; veio %v", err)
+	}
+	now = now.Add(2 * time.Minute) // a janela venceu
+	if err := provider.Send(context.Background(), msg); err != nil {
+		t.Fatalf("após a janela deveria liberar; veio %v", err)
+	}
+	if got := spy.calls.Load(); got != 3 {
+		t.Fatalf("provider chamado %d vez(es); deveria ser 3", got)
+	}
+}
+
+// TestGuard_PrdIdempotencia: a reentrega do mesmo pedido (mesma chave) não duplica o envio.
+func TestGuard_PrdIdempotencia(t *testing.T) {
+	t.Parallel()
+
+	spy := &spyProvider{}
+	provider := mail.Guarded(spy, mail.GuardConfig{Env: mail.EnvPrd})
+	msg := mail.Message{To: "ana@cliente.com.br", Subject: "otp", Body: "1", IdempotencyKey: "desafio-123"}
+
+	for i := 0; i < 3; i++ {
+		if err := provider.Send(context.Background(), msg); err != nil {
+			t.Fatalf("reentrega %d falhou: %v", i, err)
+		}
+	}
+	if got := spy.calls.Load(); got != 1 {
+		t.Fatalf("provider chamado %d vez(es); a mesma chave deveria enviar 1", got)
+	}
+}
+
+// TestGuard_PrdBreakerAbreEFecha: provider caído abre o breaker (falha rápida, sem martelar);
+// passado o cooldown, volta a tentar.
+func TestGuard_PrdBreakerAbreEFecha(t *testing.T) {
+	t.Parallel()
+
+	spy := &spyProvider{}
+	down := errors.New("resend 503")
+	spy.err.Store(&down)
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	provider := mail.Guarded(spy, mail.GuardConfig{
+		Env: mail.EnvPrd, Now: func() time.Time { return now },
+		Prd: mail.PrdLimits{BreakerFailures: 2, BreakerCooldown: 30 * time.Second},
+	})
+	send := func(i int) error {
+		return provider.Send(context.Background(),
+			mail.Message{To: fmt.Sprintf("u%d@cliente.com.br", i), Subject: "otp", Body: "1"})
+	}
+
+	_ = send(1)
+	_ = send(2) // 2ª falha seguida: abre
+	if err := send(3); !errors.Is(err, mail.ErrCircuitOpen) {
+		t.Fatalf("esperava ErrCircuitOpen com o breaker aberto; veio %v", err)
+	}
+	if got := spy.calls.Load(); got != 2 {
+		t.Fatalf("breaker aberto não pode chamar o provider; chamadas=%d, esperado 2", got)
+	}
+	spy.err.Store(nil)
+	now = now.Add(time.Minute) // cooldown venceu
+	if err := send(4); err != nil {
+		t.Fatalf("após o cooldown deveria voltar a enviar; veio %v", err)
+	}
+}
 ```
 
 O mesmo desenho vale para `SmsProvider` (Twilio), `PushProvider` e qualquer webhook de
-terceiro: **interface + sink default + guard decorator + cap**. Entregar de verdade fora de
+terceiro: **interface + sink default + guard decorator** (cap por execução fora de prd;
+rate-limit/idempotência/breaker em prd). Entregar de verdade fora de
 prd exige **as cinco** condições da normativa (ADR aceito, allowlist ≤5 endereços da casa,
 cap, janela com expiração, subdomínio de envio separado) — faltou uma, não roda.
 
@@ -476,4 +780,4 @@ lockout progressivo conta+IP); notificação ao usuário com "não fui eu". Deta
 
 - [ ] JWKS público (assinatura só no auth); audit log de authn/authz; risk engine/rate-limit; migração de legado tratada como prioridade 0.
 
-- [ ] **Efeito externo fora de prd (§3.1):** `EmailProvider`/`SmsProvider` com **sink default** fora de `prd`, **guard decorator DENTRO do provider** (`mail.Guarded`) devolvendo `error`, **cap por execução** com contador atômico, endereço sintético só em `test.<domain>` (null MX) e chave **sandbox** — provado por `TestGuard_RecusaDominioExterno` (espera a recusa) e `TestGuard_CapAbortaExecucao`.
+- [ ] **Efeito externo fora de prd (§3.1):** `EmailProvider`/`SmsProvider` com **sink default** fora de `prd`, **guard decorator DENTRO do provider** (`mail.Guarded`) devolvendo `error`, **cap por execução SÓ fora de prd** (em prd: rate-limit por destinatário + idempotência + circuit breaker, sem teto de processo), endereço sintético só em `test.<domain>` (null MX) e chave **sandbox** — provado por `TestGuard_RecusaDominioExterno` (espera a recusa), `TestGuard_CapAbortaExecucao` e `TestGuard_PrdNaoTemCapPorProcesso`.
