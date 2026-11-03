@@ -17,3 +17,5 @@ como foco.
 4. Confirme os dois caminhos. **Não rode `/compact`** — este comando só arquiva.
 
 Regras: armazene SEMPRE em `<projeto>_archive` (§28). Sem segredo/PII nos MDs (§16.1).
+
+**Git é a trava de conclusão (piso 22):** depois de gravar, faça **commit + push** do archive (repo privado) e confirme `git status` limpo e `HEAD == origin`; sem remote/push o handoff **não está pronto**. Handoff a cada 6 h de trabalho ativo e em todo fim de sessão/marco (piso 26).

@@ -2,6 +2,19 @@
 
 Todas as mudanças relevantes deste pacote, no formato [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 com versionamento [SemVer](https://semver.org/lang/pt-BR/).
+## [Não lançado]
+### Corrigido
+- **P0-3 — cap de e-mail em prd derrubava o OTP de login.** O guard (`references/iam.md` §3.1) aplicava o cap por execução (default 50, contador de vida do processo) também em prd: após o 50º envio o IdP devolvia erro até reiniciar. Agora o **cap vale SÓ fora de prd**; em prd o guard é fail-closed por destinatário (endereço único e bem formado) e a proteção é **rate-limit por destinatário (janela deslizante) + idempotência (`IdempotencyKey`) + circuit breaker do provider**, sem teto de 50. Código, composição, DoD, SKILL.md, `assets/CLAUDE.md`, `entrega.md` e anti-padrão ajustados. Teste novo `scripts/iam-guard.test.sh` compila e roda o exemplo do doc (vermelho comprovado reintroduzindo o cap em prd).
+- **Guard por último `@` (P1-8):** `"vitima@gmail.com, qa@test.dominio"` passava pelo domínio de teste. Novo `parse*Recipient` recusa lista, `;`, `<>`, aspas, espaço e CR/LF em TODOS os ambientes (`ErrInvalidRecipient`/`InvalidRecipient`); `redact` só sobre endereço validado.
+- **P0-2 — pre-commit `check-diff.sh HEAD` era falso verde permanente** (HEAD vs HEAD = diff vazio). O hook usa `check-diff.sh --staged` (olha o INDEX); base == HEAD agora BLOQUEIA (salvo `--allow-empty`). Hook ganhou fmt/lint da linguagem.
+- **P0-6 — `check-diff.sh` sem vetos da linguagem:** regras por extensão — Rust: `unwrap()`/`expect()`, `let _ =`, `format!` com SQL, `#[ignore]`; Go: `_ = err`, `//nolint` sem justificativa, `panic(`, `math/rand` em arquivo de segredo, `t.Skip(` (antes código morto: o filtro excluía `_test.go`). Silenciamento de teste agora varre arquivos de teste. Escape visível `// check-diff:allow: <motivo>`. Rust: `#[cfg(test)]` inline fica fora da contagem de linhas e dos vetos; atributos e `*x =` contam como código (P1-12). Testes vermelhos plantados em `check-diff.test.sh`.
+- **P0-1 — template de CI disparava por `pull_request`/`push` em branch** (piso 27). Agora `workflow_dispatch` + `push: tags ["hml-*","v*"]`, `concurrency` com `cancel-in-progress`, `paths-ignore`; base do `check-diff` = tag anterior (P1-3); jobs plugam `check-ci-triggers`, `check-deploy-git`, `check-external-effects` e (opcional) `check-resilience` da engineering. `test-kit` com placeholder agora REPROVA (P1-2). Go: `go mod verify`/`go mod tidy -diff`. Rust: jobs `msrv` e `miri`.
+- **P0-4/P0-5 — desempate e hierarquia pré-rol:** removidos "Go é o default pragmático em empate" (anti-padrões) e "Rust principal/Go auxiliar"/"Rust-first" (`/rust-load`, `/rust-iam`, `arquitetura.md`); apontam para `schematize-engineering` → `references/linguagens.md` (fit + ADR). `/go-load` e `/rust-load` passam a listar `concorrencia.md`/`stack-versoes.md` (P1-9).
+- `.golangci.yml` (Go): + `errorlint`, `noctx`, `contextcheck`, `bodyclose` (não validado com o binário: `golangci-lint` ausente nesta máquina).
+### Adicionado
+- Bloco "Herda os pisos 22–29 da `schematize-engineering`" em SKILL.md e `assets/CLAUDE.md`; DoD (`entrega.md`, CLAUDE.md, PR_TEMPLATE) com remote+push+HEAD==origin, relatório/handoff e CI só antes do hml; `/go-ops` com pisos 23/24 (deploy só do git, IA só fala com o ops); `/go-handoff` e `/go-cc` com commit+push.
+- `scripts/iam-guard.test.sh`.
+
 ## [1.14.1] — 2026-10-20
 ### Alterado
 - Bloco herdado `engineering/iam-desenho:invariantes` sincronizado: passkey padrão na fase 0 e matriz de acesso por rota.

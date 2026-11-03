@@ -3,11 +3,11 @@ description: schematize-go — audita/scaffolda o <projeto>_ops (interface únic
 argument-hint: "[bootstrap | audit | install]"
 ---
 
-Governe a operação do sistema pelo **`<projeto>_ops`** (`references/ops.md`). Plan-first: **audita, mostra o plano, pede aprovação, então executa** — e **nada toca o servidor fora do ops**.
+Governe a operação do sistema pelo **`<projeto>_ops`** (`references/ops.md`). Plan-first: **audita, mostra o plano, pede aprovação, então executa — pelo ops, nunca por fora** (piso 24: a IA nunca muda a VPS direto e nunca escreve SQL/script mutável; pede uma **operação nomeada** do ops, com dry-run/plano, confirmação humana p/ destrutivo e **log de auditoria append-only** antes de cada escrita — `schematize-engineering` → `references/ops.md` §8).
 
 ## 1. Fluxo de ambientes (verifique primeiro)
 Confirme que o pipeline força **dev local → teste local → GitHub → hml → prd** e que **nada vai direto pra hml/prd**:
-- Deploy só aceita **artefato com proveniência git** (commit SHA); artefato sem origem no git é recusado.
+- **Deploy SÓ do git (pisos 22/23):** o ops, rodando na VPS, **clona/atualiza do repositório** (`fetch` + `checkout` de commit SHA/tag exato, verificado). **VETADO** `scp`, `rsync`, `tar | ssh`, `docker save | load`, `git bundle` ad-hoc, editar arquivo remoto, colar patch; código não commitado/pushado não vai a lugar nenhum. Gate: `schematize-engineering` → `scripts/check-deploy-git.sh`. (Única exceção escopada: a máquina de build/teste dev/hml do piso 29, só para build/teste, nunca prd.)
 - hml/prd com filesystem **read-only** (sem edição manual); **drift detection** ligado (o ops recusa/alerta divergência com o git).
 - **VETADO editar código direto no servidor.** Achou edição manual → trate como incidente (archive), não como fluxo.
 
@@ -27,7 +27,8 @@ Verifique/scaffolde (`schematize-engineering` -> `references/ops.md` §3):
 ## 2. O ops é a interface única (100%)
 Verifique/scaffolde a CLI do `<projeto>_ops` com comandos **idempotentes**, `--help` e saída machine-readable, cobrindo **todo** o ciclo sem depender da IA:
 `bootstrap` · `install`/`up` · `update` · `config` · `migrate` (reversível) · `health`/`doctor` · `rollback` · `logs`/`troubleshoot` · `test` (test kit a `schematize-qa` (test kit, `references/execucao.md` secao 2)).
-- Se alguma operação de servidor **não** tem comando de ops, o gap é o achado: **crie o comando** — não faça por fora (`ssh` ad-hoc, editar arquivo, `docker`/`kubectl` na mão são vetados).
+- Se alguma operação de servidor **não** tem comando de ops, o gap é o achado: **implemente o comando NO REPO do ops (via git)** — não faça por fora (`ssh` ad-hoc, editar arquivo, `docker`/`kubectl` na mão são vetados).
+- Leitura rica e segura pela IA: logs com filtro/tail, status/health, drift vs git, config com segredo mascarado e **banco somente-leitura por query nomeada e versionada** — a IA lê por aqui, não por `ssh`/SQL próprio.
 - Meta de completude: **`ops install` provisiona um servidor do zero** sozinho.
 
 ## 3. Instalação paralela (= nproc)

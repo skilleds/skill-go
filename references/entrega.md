@@ -13,13 +13,19 @@
 
 ## 35. Definition of Done
 
+- [ ] **Tudo no git (piso 22):** `git remote -v` não vazio, `git status` limpo e `HEAD == origin` (nada por empurrar) — sem remote/push a demanda **não está concluída**. Deploy só a partir do SHA do git, via ops (pisos 23/24)
+
+- [ ] **Relatório ≤ 30 min e handoff ≤ 6 h em dia (piso 26)**, no archive, com commit+push
+
+- [ ] **CI remoto só antes do hml** (tag `hml-*`/`v*` ou `workflow_dispatch`; piso 27) — o gate por commit é local (pre-commit + `check-diff.sh --staged`); não existe "CI verde no PR"
+
 - [ ] **Teste emulado por IA (`simulated`, a `schematize-qa` (`references/categorias.md` §§5 e 10)) executado — 100% das rotas do inventário acessíveis pra quem deve e bloqueadas pra quem não deve; rota fantasma/morta = bloqueio**
 
 - [ ] **Pentest de entrada limpo: sem `500`, sem coerção de tipo, sem eco não-escapado, sem vazamento cross-tenant (a `schematize-qa` (`references/categorias.md` §§5 e 10), a `schematize-pentest`)**
 
 - [ ] Smoke tests executados em staging **(com asserção de conteúdo e self-check anti verde-mentiroso — a `schematize-qa` (`references/categorias.md` §§5 e 10))**
 
-- [ ] **Nenhum efeito externo real fora de `prd` (se o projeto envia e-mail/SMS/push/webhook/cobrança):** provider default = **sink**, **guard deny-by-default dentro do provider** (com teste que **vê a recusa**), **cap por execução** válido em TODOS os ambientes, e endereços só no **domínio de teste em rota nula**. Normativa: `schematize-engineering` → `references/efeitos-externos.md`; recorte desta linguagem em `references/iam.md` §3.1; anti-padrão §37 *"Disparar efeito externo REAL a partir de não-produção"* (citado **por título**, porque a numeração do §37 diverge entre skills)
+- [ ] **Nenhum efeito externo real fora de `prd` (se o projeto envia e-mail/SMS/push/webhook/cobrança):** provider default = **sink**, **guard deny-by-default dentro do provider** (com teste que **vê a recusa**), **cap por execução SÓ fora de prd** (em prd o guard é fail-closed por destinatário e a proteção é rate-limit/idempotência/circuit breaker — cap de processo em prd derruba o OTP de login), e endereços só no **domínio de teste em rota nula**. Normativa: `schematize-engineering` → `references/efeitos-externos.md`; recorte desta linguagem em `references/iam.md` §3.1; anti-padrão §37 *"Disparar efeito externo REAL a partir de não-produção"* (citado **por título**, porque a numeração do §37 diverge entre skills)
 
 > Os itens em negrito são **bloqueantes absolutos**: archive (§28), ausência de macaquice (§37), **nenhum efeito externo real fora de `prd`** (`schematize-engineering` → `references/efeitos-externos.md`), teste emulado por IA com rota 100% acessível (ver a `schematize-qa`, `references/categorias.md` §§5 e 10), e pentest de entrada limpo (ver a `schematize-pentest`). Faltando qualquer um, a task **não está pronta** — independente de todo o resto estar verde. Smoke verde não basta: tem que ser smoke que **prova** conteúdo, não só status.
 

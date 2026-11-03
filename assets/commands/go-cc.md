@@ -36,3 +36,5 @@ como foco do resumo e da compactação.
 
 **Regras:** nunca pule a escrita dos dois arquivos. Armazene SEMPRE em
 `<projeto>_archive` (§28). Não inclua segredo nem PII nos MDs (§16.1).
+
+**Git é a trava de conclusão (piso 22):** depois de gravar o handoff, faça **commit + push** do archive (repo privado) e confirme `git status` limpo e `HEAD == origin` **antes** do `/compact`. Handoff a cada 6 h de trabalho ativo e em todo fim de sessão/marco (piso 26).

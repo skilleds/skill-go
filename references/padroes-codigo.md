@@ -68,3 +68,7 @@ versão. **CI e dev passam a rodar a mesma versão da ferramenta, sem `go instal
 Ver `references/testes.md`. É citado aqui porque muda o **jeito de escrever** código com tempo:
 se o teste pode controlar o relógio, some a tentação de espalhar `time.Sleep(50 * time.Millisecond)`
 "para dar tempo" — que é a origem do flaky que a `schematize-qa` manda colocar em quarentena.
+
+## Vetos grep-áveis cobertos pelo gate
+
+O `scripts/check-diff.sh` reprova em produção: `_ = err`, `//nolint` sem justificativa, `panic(` fora de `main`/`init` e `math/rand` em arquivo que lida com token/segredo/sessão; e `t.Skip(` em qualquer teste. Exceção legítima (ex.: `panic` de boot para config ausente) leva `// check-diff:allow: <motivo>` na própria linha — o motivo aparece no diff e é revisado.

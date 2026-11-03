@@ -19,6 +19,7 @@
 - [ ] Archive (chat/task) gerado e commitado (§28)
 - [ ] ADR criado (se decisão arquitetural ou desvio)
 - [ ] CODEOWNERS revisou
+- [ ] Remote existe, push feito e `HEAD == origin` (piso 22); deploy só do git via ops (pisos 23/24)
 
 ## Notas para o reviewer
 <pontos de atenção, riscos>
